@@ -22,7 +22,6 @@ defmodule ArcCache do
       "value"
   """
   use GenServer
-  @table ArcCache
 
   defstruct t1: nil, b1: nil, t2: nil, b2: nil, size: 0, target: 0
 

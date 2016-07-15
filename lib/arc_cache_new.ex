@@ -23,9 +23,7 @@ defmodule ArcCacheNew do
   """
   use GenServer
   @table ArcCacheNew
-  defstruct t1data: nil, t1meta: nil, b1keys: nil, b1meta: nil,
-            t2data: nil, t2meta: nil, b2keys: nil, b2meta: nil,
-            size: 0, target: 0
+  defstruct t1: nil, t2: nil, b1: nil, b2: nil, size: 0, target: 0
 
   #
   # -- Public API --
@@ -68,12 +66,12 @@ defmodule ArcCacheNew do
 
   @doc false
   def handle_debug(state, :target), do: Map.get(state, :target)
-  def handle_debug(state, :t1), do: get_all(state.t1meta, state.t1data)
-  def handle_debug(state, :t2), do: get_all(state.t2meta, state.t2data)
-  def handle_debug(state, :b1), do: get_all(state.b1meta, state.b1keys)
-  def handle_debug(state, :b2), do: get_all(state.b2meta, state.b2keys)
+  def handle_debug(state, table), do: get_all(state, table)
 
-  defp get_all(meta, data) do
+  @doc false
+  defp get_all(state, table) do
+    meta = state |> Map.get(table) |> Map.get(:meta)
+    data = state |> Map.get(table) |> Map.get(:data)
     get_all(meta, data, :ets.first(meta), [])
   end
   defp get_all(meta, data, lastresult, result) do
@@ -91,34 +89,22 @@ defmodule ArcCacheNew do
   end
 
   @doc false
-  def handle_get_all(state) do
-    handle_get_all(state, :ets.first(state.meta_table), [])
-  end
-  def handle_get_all(state, lastresult, result) do
-    case lastresult do
-      :"$end_of_table" -> result
-      uniq ->
-        [{^uniq, key}] = :ets.lookup(state.meta_table, uniq)
-        [{^key, ^uniq, value}] = :ets.lookup(state.data_table, key)
-        handle_get_all(state, :ets.next(state.meta_table, uniq), result ++ [{key, value}])
-    end
-  end
-
-  @doc false
   def init(name, size) do
     t1data = :"#{name}_t1data"
     t1meta = :"#{name}_t1meta"
-    b1keys = :"#{name}_b1keys"
+    b1data = :"#{name}_b1data"
     b1meta = :"#{name}_b1meta"
     t2data = :"#{name}_t2data"
     t2meta = :"#{name}_t2meta"
-    b2keys = :"#{name}_b2keys"
+    b2data = :"#{name}_b2data"
     b2meta = :"#{name}_b2meta"
-    for table <- [t1data, t2data, b1keys, b2keys], do: make_datatable(table)
+    for table <- [t1data, t2data, b1data, b2data], do: make_datatable(table)
     for table <- [t1meta, t2meta, b1meta, b2meta], do: make_metatable(table)
-    %ArcCacheNew{t1data: t1data, t1meta: t1meta, b1keys: b1keys, b1meta: b1meta,
-                 t2data: t2data, t2meta: t2meta, b2keys: b2keys, b2meta: b2meta,
-                 size: size, target: 0}
+    t1 = %{meta: t1meta, data: t1data}
+    t2 = %{meta: t2meta, data: t2data}
+    b1 = %{meta: b1meta, data: b1data}
+    b2 = %{meta: b2meta, data: b2data}
+    %ArcCacheNew{t1: t1, t2: t2, b1: b1, b2: b2, size: size, target: 0}
   end
 
   defp make_datatable(table) do
@@ -128,15 +114,22 @@ defmodule ArcCacheNew do
     :ets.new(table, [:named_table, :ordered_set])
   end
 
+  defp datatable(state, table) do
+    state |> Map.get(table) |> Map.get(:data)
+  end
+  defp metatable(state, table) do
+    state |> Map.get(table) |> Map.get(:meta)
+  end
+
   @doc false
   def handle_get(state, key, touch) do
-    with nil <- get_from_table(state, :t1data, key, touch, &move_t1_to_t2/4),
-         nil <- get_from_table(state, :t2data, key, touch, &move_t2_to_t2/4),
+    with nil <- get_from_table(state, :t1, key, touch, &move_t1_to_t2/4),
+         nil <- get_from_table(state, :t2, key, touch, &move_t2_to_t2/4),
     do: nil
   end
 
   defp get_from_table(state, table, key, touch, action) do
-    case :ets.lookup(Map.get(state, table), key) do
+    case state |> datatable(table) |> :ets.lookup(key) do
       [{^key, uniq, value}] ->
         touch && action.(state, key, uniq, value)
         value
@@ -152,10 +145,10 @@ defmodule ArcCacheNew do
 #         nil <- lookup(:b2keys, state, key),
 #    do:
 
-    {t1_uniq, t1_value} = lookup_table(:t1data, state, key)
-    {t2_uniq, t2_value} = lookup_table(:t2data, state, key)
-    b1_uniq = lookup_ghost(:b1keys, state, key)
-    b2_uniq = lookup_ghost(:b2keys, state, key)
+    {t1_uniq, t1_value} = lookup_table(:t1, state, key)
+    {t2_uniq, t2_value} = lookup_table(:t2, state, key)
+    b1_uniq = lookup_ghost(:b1, state, key)
+    b2_uniq = lookup_ghost(:b2, state, key)
     cond do
       b1_uniq  != nil -> do_in_b1(state, b1_uniq, key, value)
       b2_uniq  != nil -> do_in_b2(state, b2_uniq, key, value)
@@ -174,136 +167,126 @@ defmodule ArcCacheNew do
   end
 
   defp lookup_table(table, state, key) do
-    case :ets.lookup(Map.get(state,table), key) do
+    case state |> datatable(table) |> :ets.lookup(key) do
       []                    -> {nil, nil}
       [{^key, uniq, value}] -> {uniq, value}
     end
   end
 
   defp lookup_ghost(table, state, key) do
-    case :ets.lookup(Map.get(state,table), key) do
+    case state |> datatable(table) |> :ets.lookup(key) do
       []             -> nil
       [{^key, uniq}] -> uniq
     end
   end
 
+  def delete(state, table, uniq, key) do
+    state |> metatable(table) |> :ets.delete(uniq)
+    state |> datatable(table) |> :ets.delete(key)
+  end
+
   defp do_in_b1(state, uniq, key, value) do
-    state = state |> increase_target |> replace(false)
-    :ets.delete(state.b1meta, uniq)
-    :ets.delete(state.b1keys, key)
+    state = state |> target(:increase) |> replace(false)
+    delete(state, :b1, uniq, key)
     put_to_l2_mru(state, key, value)
     state
   end
 
   defp do_in_b2(state, uniq, key, value) do
-    state = state |> decrease_target |> replace(true)
-    :ets.delete(state.b2meta, uniq)
-    :ets.delete(state.b2keys, key)
+    state = state |> target(:decrease) |> replace(true)
+    delete(state, :b2, uniq, key)
     put_to_l2_mru(state, key, value)
     state
   end
 
   defp move_t1_to_t2(state, key, uniq, value) do
-    :ets.delete(state.t1meta, uniq)
-    :ets.delete(state.t1data, key)
+    delete(state, :t1, uniq, key)
     new_uniq = :erlang.unique_integer([:monotonic])
-    :ets.insert(state.t2data, {key, new_uniq, value})
-    :ets.insert(state.t2meta, {new_uniq, key})
+    :ets.insert(datatable(state, :t2), {key, new_uniq, value})
+    :ets.insert(metatable(state, :t2), {new_uniq, key})
     state
   end
 
   defp move_t2_to_t2(state, key, uniq, value) do
     new_uniq = :erlang.unique_integer([:monotonic])
-    :ets.delete(state.t2meta, uniq)
-    :ets.insert(state.t2meta, {new_uniq, key})
-    :ets.update_element(state.t2data, key,  {2, new_uniq})
-    :ets.update_element(state.t2data, key,  {3, value})
+    :ets.delete(metatable(state, :t2), uniq)
+    :ets.insert(metatable(state, :t2), {new_uniq, key})
+    :ets.update_element(datatable(state, :t2), key,  {2, new_uniq})
+    :ets.update_element(datatable(state, :t2), key,  {3, value})
     state
   end
 
   defp put_to_l1_mru(state, key, value) do
     new_uniq = :erlang.unique_integer([:monotonic])
-    :ets.insert(state.t1data, {key, new_uniq, value})
-    :ets.insert(state.t1meta, {new_uniq, key})
+    :ets.insert(datatable(state, :t1), {key, new_uniq, value})
+    :ets.insert(metatable(state, :t1), {new_uniq, key})
     state
   end
 
   defp put_to_l2_mru(state, key, value) do
     new_uniq = :erlang.unique_integer([:monotonic])
-    :ets.insert(state.t2data, {key, new_uniq, value})
-    :ets.insert(state.t2meta, {new_uniq, key})
+    :ets.insert(datatable(state, :t2), {key, new_uniq, value})
+    :ets.insert(metatable(state, :t2), {new_uniq, key})
     state
   end
 
-  defp increase_target(state) do
-    len_b1 = :ets.info(state.b1keys, :size)
-    len_b2 = :ets.info(state.b2keys, :size)
-    new_target = min(state.size, state.target + max((len_b2/len_b1) |> Float.floor |> round, 1))
-    %ArcCacheNew{state | target: new_target}
-  end
-
-  defp decrease_target(state) do
-    len_b1 = :ets.info(state.b1keys, :size)
-    len_b2 = :ets.info(state.b2keys, :size)
-    new_target = max(0, state.target - max((len_b1/len_b2) |> Float.floor |> round, 1))
+  defp target(state, action) do
+    len_b1 = :ets.info(datatable(state, :b1), :size)
+    len_b2 = :ets.info(datatable(state, :b2), :size)
+    new_target = case action do
+      :increase -> min(state.size, state.target + max((len_b2/len_b1) |> Float.floor |> round, 1))
+      :decrease -> max(0,          state.target - max((len_b1/len_b2) |> Float.floor |> round, 1))
+    end
     %ArcCacheNew{state | target: new_target}
   end
 
   defp replace(state, was_in_b2) do
-    len_t1 = :ets.info(state.t1data, :size)
+    len_t1 = :ets.info(datatable(state, :t1), :size)
     if(len_t1 >= 1 and ((was_in_b2 and len_t1 == state.target) or (len_t1 > state.target))) do
-      ghost(state.t1meta, state.t1data, state.b1meta, state.b1keys)
+      ghost(state, :t1, :b1)
     else
-      ghost(state.t2meta, state.t2data, state.b2meta, state.b2keys)
+      ghost(state, :t2, :b2)
     end
     state
   end
 
-  defp ghost(meta_t, data_t, meta_b, keys_b) do
-    case :ets.first(meta_t) do
+  defp ghost(state, from, to) do
+    case state |> metatable(from) |> :ets.first do
       :"$end_of_table" -> nil
-      uniq -> [{^uniq, key}] = :ets.take(meta_t, uniq)
-              :ets.delete(data_t, key)
-              :ets.insert(meta_b, {uniq, key})
-              :ets.insert(keys_b, {key, uniq})
+      uniq -> [{^uniq, key}] = state |> metatable(from) |> :ets.take(uniq)
+              state |> datatable(from) |> :ets.delete(key)
+              state |> metatable(to) |> :ets.insert({uniq, key})
+              state |> datatable(to) |> :ets.insert({key, uniq})
     end
   end
 
-  defp remove_lru(meta, data) do
-
+  defp remove_lru(state, table) do
+    case state |> metatable(table) |> :ets.first do
+      :"$end_of_table" -> nil
+      uniq -> [{^uniq, key}] = state |> metatable(table) |> :ets.take(uniq)
+              state |> datatable(table) |> :ets.take(key)
+    end
   end
 
   defp adjust(state) do
-    len_t1 = :ets.info(state.t1data, :size)
-    len_t2 = :ets.info(state.t2data, :size)
-    len_b1 = :ets.info(state.b1keys, :size)
-    len_b2 = :ets.info(state.b2keys, :size)
+    len_t1 = :ets.info(datatable(state, :t1), :size)
+    len_t2 = :ets.info(datatable(state, :t2), :size)
+    len_b1 = :ets.info(datatable(state, :b1), :size)
+    len_b2 = :ets.info(datatable(state, :b2), :size)
     len_l1 = len_t1 + len_b1
     len_l2 = len_t2 + len_b2
     cond do
       len_l1 >= state.size ->
         if(len_t1 < state.size) do
-          case :ets.first(state.b1meta) do
-            :"$end_of_table" -> nil
-            uniq -> [{^uniq, key}]  = :ets.take(state.b1meta, uniq)
-                    [{^key, ^uniq}] = :ets.take(state.b1keys, key)
-          end
+          remove_lru(state, :b1)
           state |> replace(false)
         else
-          case :ets.first(state.t1meta) do
-            :"$end_of_table" -> nil
-            uniq -> [{^uniq, key}]         = :ets.take(state.t1meta, uniq)
-                    [{^key, ^uniq, _value}] = :ets.take(state.t1data, key)
-          end
+          remove_lru(state, :t1)
           state
         end
       len_l1 < state.size and len_l1 + len_l2 >= state.size ->
         if(len_l1 + len_l2 >= 2*state.size) do
-          case :ets.first(state.b2meta) do
-            :"$end_of_table" -> nil
-            uniq -> [{^uniq, key}]  = :ets.take(state.b2meta, uniq)
-                    [{^key, ^uniq}] = :ets.take(state.b2keys, key)
-          end
+          remove_lru(state, :b2)
         end
         state |> replace(false)
       true -> state

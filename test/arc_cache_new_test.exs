@@ -34,6 +34,18 @@ defmodule ArcCacheNewTest do
     assert ArcCacheNew.debug(:arcnewtest2, :t2) == [{1, "test1"}, {2, "test2"}]
   end
 
+  test "cache update with and without touching" do
+    assert {:ok, _} = ArcCacheNew.start_link(:arcnewtest3, 10)
+    assert :ok      == ArcCacheNew.put(:arcnewtest3, 1, "test1")
+    assert :ok      == ArcCacheNew.put(:arcnewtest3, 2, "test2")
+    assert :ok      == ArcCacheNew.update(:arcnewtest3, 1, "test12", false)
+    assert ArcCacheNew.debug(:arcnewtest3, :t1) == [{1, "test12"}, {2, "test2"}]
+    assert ArcCacheNew.debug(:arcnewtest3, :t2) == []
+    assert :ok      == ArcCacheNew.update(:arcnewtest3, 1, "test13", true)
+    assert ArcCacheNew.debug(:arcnewtest3, :t1) == [{2, "test2"}]
+    assert ArcCacheNew.debug(:arcnewtest3, :t2) == [{1, "test13"}]
+  end
+
   # Test to reproduce the table fillup in reference implementation described at
   # http://code.activestate.com/recipes/576532/
   test "Python recipe 576532 test" do

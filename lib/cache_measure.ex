@@ -9,10 +9,11 @@ defmodule CacheMeasure do
       |> Stream.filter(&(String.length(&1)>0))
       |> Stream.map(&String.split/1)
       |> Stream.flat_map(&(&1))
+      |> Stream.filter(&(String.length(&1)>10))
       |> Enum.reduce({0, 0, cache}, &cache_item/2)
     end)
     Agent.stop(:cache)
-    {time, total, hits}
+    [time: time, total: total, hits: hits, ratio: "#{100.0*hits/total}%"]
   end
 
   defp cache_item(key, {total, hits, cache}) do

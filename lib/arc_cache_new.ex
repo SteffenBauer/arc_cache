@@ -53,6 +53,15 @@ defmodule ArcCacheNew do
   end
 
   @doc """
+  Updates a `value` in `cache`. If `key` is not present in `cache` then nothing is done.
+  `touch` defines if the ARC tables should be rebalanced. The function assumes that
+  the element exists in the cache.
+  """
+  def update(name, key, value, touch \\ true) do
+    Agent.update(name, __MODULE__, :handle_update, [key, value, touch])
+  end
+
+  @doc """
   Removes the entry stored under the given `key` from cache.
   """
   def delete(name, key) do
@@ -94,6 +103,16 @@ defmodule ArcCacheNew do
         :ok
       [] -> nil
     end
+  end
+
+  @doc false
+  def handle_update(state, key, value, true) do
+    state
+  end
+  def handle_update(state, key, value, false) do
+    with false <- :ets.update_element(datatable(state, :t2), key,  {3, value}),
+    do: :ets.update_element(datatable(state, :t1), key,  {3, value})
+    state
   end
 
   @doc false
@@ -151,8 +170,8 @@ defmodule ArcCacheNew do
 
   @doc false
   def handle_get(state, key, touch) do
-    with nil <- get_from_table(state, :t1, key, touch, &move_t1_to_t2/4),
-         nil <- get_from_table(state, :t2, key, touch, &move_t2_to_t2/4),
+    with nil <- get_from_table(state, :t2, key, touch, &move_t2_to_t2/4),
+         nil <- get_from_table(state, :t1, key, touch, &move_t1_to_t2/4),
     do: nil
   end
 
@@ -223,8 +242,7 @@ defmodule ArcCacheNew do
     new_uniq = :erlang.unique_integer([:monotonic])
     :ets.delete(metatable(state, :t2), uniq)
     :ets.insert(metatable(state, :t2), {new_uniq, key})
-    :ets.update_element(datatable(state, :t2), key,  {2, new_uniq})
-    :ets.update_element(datatable(state, :t2), key,  {3, value})
+    :ets.update_element(datatable(state, :t2), key,  [{2, new_uniq}, {3, value}])
     state
   end
 

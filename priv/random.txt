@@ -1,0 +1,13 @@
+random
+MODULE
+random
+MODULE SUMMARY
+Pseudo-random number generation.
+DESCRIPTION
+
+This module provides a random number generator. The method is attributed to B.A. Wichmann and I.D. Hill in 'An efficient and portable pseudo-random number generator', Journal of Applied Statistics. AS183. 1982. Also Byte March 1987.
+
+The algorithm is a modification of the version attributed to Richard A. O'Keefe in the standard Prolog library.
+
+Every time a random number is requested, a state is used to calculate it, and a new state is produced. The state can either be implicit (kept in the process dictionary) or be an explicit argument and return value. In this implementation, the state (the type ran()) consists of a tuple of three integers.
+

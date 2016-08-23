@@ -2,7 +2,7 @@ defmodule ArcCacheTest do
   use ExUnit.Case
   # doctest ArcCache
 
-   test "basic usage" do
+  test "basic usage" do
     assert {:ok, _}   = ArcCache.start_link(:arctest1, 10)
     assert :ok        == ArcCache.put(:arctest1, 1, "test1")
     assert "test1"    == ArcCache.get(:arctest1, 1, false)

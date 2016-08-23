@@ -12,9 +12,8 @@ defmodule ArcCacheNewTest do
     assert "test2"    == ArcCacheNew.get(:arcnewtest1, 2, false)
     assert :ok        == ArcCacheNew.put(:arcnewtest1, 1, "newtest1")
     assert "newtest1" == ArcCacheNew.get(:arcnewtest1, 1, false)
-
-#    assert :ok        == ArcCacheNew.delete(:arctest1, 1)
-#    assert nil        == ArcCacheNew.get(:arctest1, 1, false)
+    assert :ok        == ArcCacheNew.delete(:arcnewtest1, 1)
+    assert nil        == ArcCacheNew.get(:arcnewtest1, 1, false)
   end
 
   test "cache get with and without touching" do

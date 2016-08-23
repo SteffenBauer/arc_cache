@@ -53,6 +53,13 @@ defmodule ArcCacheNew do
   end
 
   @doc """
+  Removes the entry stored under the given `key` from cache.
+  """
+  def delete(name, key) do
+    Agent.get(name, __MODULE__, :handle_delete, [key])
+  end
+
+  @doc """
   Returns the contents of an ARC table or the current target value.
   Only for debugging / testing uses.
   """
@@ -67,6 +74,27 @@ defmodule ArcCacheNew do
   @doc false
   def handle_debug(state, :target), do: Map.get(state, :target)
   def handle_debug(state, table), do: get_all(state, table)
+
+  @doc false
+  def handle_delete(state, key) do
+    with nil <- do_delete(state.t1, key),
+         nil <- do_delete(state.t2, key),
+         nil <- do_delete(state.b1, key),
+         nil <- do_delete(state.b2, key),
+    do: nil
+  end
+
+  @doc false
+  defp do_delete(table, key) do
+    entry = :ets.lookup(table.data, key)
+    case entry do
+      [{^key, uniq, _}] ->
+        :ets.delete(table.meta, uniq)
+        :ets.delete(table.data, key)
+        :ok
+      [] -> nil
+    end
+  end
 
   @doc false
   defp get_all(state, table) do
@@ -139,44 +167,28 @@ defmodule ArcCacheNew do
 
   @doc false
   def handle_put(state, key, value) do
-#    with nil <- lookup(:t1data, state, key),
-#         nil <- lookup(:t2data, state, key),
-#         nil <- lookup(:b1keys, state, key),
-#         nil <- lookup(:b2keys, state, key),
-#    do:
-
-    {t1_uniq, t1_value} = lookup_table(:t1, state, key)
-    {t2_uniq, t2_value} = lookup_table(:t2, state, key)
-    b1_uniq = lookup_ghost(:b1, state, key)
-    b2_uniq = lookup_ghost(:b2, state, key)
-    cond do
-      b1_uniq  != nil -> do_in_b1(state, b1_uniq, key, value)
-      b2_uniq  != nil -> do_in_b2(state, b2_uniq, key, value)
-      t1_value != nil -> move_t1_to_t2(state, key, t1_uniq, value)
-      t2_value != nil -> move_t2_to_t2(state, key, t2_uniq, value)
-      true            -> put_to_l1_mru(state |> adjust, key, value)
+    case do_lookup(state, key) do
+      {:t1, t1_uniq} -> move_t1_to_t2(state, key, t1_uniq, value)
+      {:t2, t2_uniq} -> move_t2_to_t2(state, key, t2_uniq, value)
+      {:b1, b1_uniq} -> do_in_b1(state, b1_uniq, key, value)
+      {:b2, b2_uniq} -> do_in_b2(state, b2_uniq, key, value)
+      true           -> put_to_mru(state |> adjust, :t1, key, value)
     end
+  end
+
+  defp do_lookup(state, key) do
+    with {:t2, nil} <- {:t2, lookup(state.t2.data, key)},
+         {:t1, nil} <- {:t1, lookup(state.t1.data, key)},
+         {:b2, nil} <- {:b2, lookup(state.b2.data, key)},
+         {:b1, nil} <- {:b1, lookup(state.b1.data, key)},
+    do: true
   end
 
   defp lookup(table, key) do
     case :ets.lookup(table, key) do
-      []                    -> nil
-      [{^key, uniq, value}] -> {uniq, value}
-      [{^key, uniq}]        -> uniq
-    end
-  end
-
-  defp lookup_table(table, state, key) do
-    case state |> datatable(table) |> :ets.lookup(key) do
-      []                    -> {nil, nil}
-      [{^key, uniq, value}] -> {uniq, value}
-    end
-  end
-
-  defp lookup_ghost(table, state, key) do
-    case state |> datatable(table) |> :ets.lookup(key) do
-      []             -> nil
-      [{^key, uniq}] -> uniq
+      []                     -> nil
+      [{^key, uniq, _value}] -> uniq
+      [{^key, uniq}]         -> uniq
     end
   end
 
@@ -188,14 +200,14 @@ defmodule ArcCacheNew do
   defp do_in_b1(state, uniq, key, value) do
     state = state |> target(:increase) |> replace(false)
     delete(state, :b1, uniq, key)
-    put_to_l2_mru(state, key, value)
+    put_to_mru(state, :t2, key, value)
     state
   end
 
   defp do_in_b2(state, uniq, key, value) do
     state = state |> target(:decrease) |> replace(true)
     delete(state, :b2, uniq, key)
-    put_to_l2_mru(state, key, value)
+    put_to_mru(state, :t2, key, value)
     state
   end
 
@@ -216,17 +228,10 @@ defmodule ArcCacheNew do
     state
   end
 
-  defp put_to_l1_mru(state, key, value) do
+  defp put_to_mru(state, table, key, value) do
     new_uniq = :erlang.unique_integer([:monotonic])
-    :ets.insert(datatable(state, :t1), {key, new_uniq, value})
-    :ets.insert(metatable(state, :t1), {new_uniq, key})
-    state
-  end
-
-  defp put_to_l2_mru(state, key, value) do
-    new_uniq = :erlang.unique_integer([:monotonic])
-    :ets.insert(datatable(state, :t2), {key, new_uniq, value})
-    :ets.insert(metatable(state, :t2), {new_uniq, key})
+    :ets.insert(datatable(state, table), {key, new_uniq, value})
+    :ets.insert(metatable(state, table), {new_uniq, key})
     state
   end
 

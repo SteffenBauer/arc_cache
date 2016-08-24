@@ -1,6 +1,6 @@
 defmodule CacheMeasure do
 
-  def read(cache, size \\ 1024) do
+  def run(cache, size \\ 1024) do
     cache.start_link(:cache, size)
     {time, {total, hits, _}} = :timer.tc( fn ->
       File.stream!("priv/War_and_Peace.txt")
@@ -9,7 +9,7 @@ defmodule CacheMeasure do
       |> Stream.filter(&(String.length(&1)>0))
       |> Stream.map(&String.split/1)
       |> Stream.flat_map(&(&1))
-      |> Stream.filter(&(String.length(&1)>10))
+      |> Stream.filter(&(String.length(&1)>8))
       |> Enum.reduce({0, 0, cache}, &cache_item/2)
     end)
     Agent.stop(:cache)

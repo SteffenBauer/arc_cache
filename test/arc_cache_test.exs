@@ -3,10 +3,10 @@ defmodule ArcCacheTest do
   # doctest ArcCache
 
   test "basic usage" do
-    assert {:ok, _}   = ArcCache.start_link(:arctest1, 10)
+    assert {:ok, _}    = ArcCache.start_link(:arctest1, 10)
     assert nil        == ArcCache.get(:arctest1, 1)
-    assert :ok        == ArcCache.put(:arctest1, 1, "test1")
-    assert "test1"    == ArcCache.get(:arctest1, 1, false)
+    assert :ok        == ArcCache.put(:arctest1, 1, "entry1")
+    assert "entry1"   == ArcCache.get(:arctest1, 1)
     assert nil        == ArcCache.get(:arctest1, 2, false)
     assert :ok        == ArcCache.put(:arctest1, 2, "test2")
     assert "test2"    == ArcCache.get(:arctest1, 2, false)
@@ -23,13 +23,13 @@ defmodule ArcCacheTest do
     assert ArcCache.debug(:arctest2, :t1) == [{1, "test1"}, {2, "test2"}]
     assert ArcCache.debug(:arctest2, :t2) == []
     assert "test1"  == ArcCache.get(:arctest2, 1, false)
-    assert "test2" == ArcCache.get(:arctest2, 2, false)
+    assert "test2"  == ArcCache.get(:arctest2, 2, false)
     assert ArcCache.debug(:arctest2, :t1) == [{1, "test1"}, {2, "test2"}]
     assert ArcCache.debug(:arctest2, :t2) == []
     assert "test1"  == ArcCache.get(:arctest2, 1, true)
     assert ArcCache.debug(:arctest2, :t1) == [{2, "test2"}]
     assert ArcCache.debug(:arctest2, :t2) == [{1, "test1"}]
-    assert "test2" == ArcCache.get(:arctest2, 2, true)
+    assert "test2"  == ArcCache.get(:arctest2, 2, true)
     assert ArcCache.debug(:arctest2, :t1) == []
     assert ArcCache.debug(:arctest2, :t2) == [{1, "test1"}, {2, "test2"}]
   end
@@ -57,8 +57,9 @@ defmodule ArcCacheTest do
     end
     assert ArcCache.debug(:arctest4, :t1) == for(k <- [41], do: {k, "Entry"})
     assert ArcCache.debug(:arctest4, :t2) == for(k <- [37, 36, 35, 34, 33, 32, 16, 17, 11], do: {k, "Entry"})
-    assert ArcCache.debug(:arctest4, :b1) == for(k <- [30, 31], do: {k, :ghost})
-    assert ArcCache.debug(:arctest4, :b2) == for(k <- [12, 13, 14, 15, 18, 19, 39, 38], do: {k, :ghost})
+    assert ArcCache.debug(:arctest4, :b1) == [30, 31]
+    assert ArcCache.debug(:arctest4, :b2) == [12, 13, 14, 15, 18, 19, 39, 38]
     assert ArcCache.debug(:arctest4, :target) == 5
   end
+
 end

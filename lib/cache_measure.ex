@@ -18,9 +18,9 @@ defmodule CacheMeasure do
 
   defp cache_item(key, {total, hits, cache}) do
     case cache.get(:cache, key) do
-      nil   -> cache.put(:cache, key, value(key))
-               {total+1, hits, cache}
-      other -> {total+1, hits+1, cache}
+      nil    -> cache.put(:cache, key, value(key))
+                {total+1, hits, cache}
+      _other -> {total+1, hits+1, cache}
     end
   end
 

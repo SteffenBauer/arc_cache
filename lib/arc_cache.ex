@@ -22,8 +22,12 @@ defmodule ArcCache do
       "value"
   """
   use GenServer
+  @table ArcCache
+  defstruct t1: nil, t2: nil, b1: nil, b2: nil, size: 0, target: 0
 
-  defstruct t1: nil, b1: nil, t2: nil, b2: nil, size: 0, target: 0
+  #
+  # -- Public API --
+  #
 
   @doc """
   Creates an ARC cache of the given size as part of a supervision tree with a registered name
@@ -41,20 +45,20 @@ defmodule ArcCache do
   end
 
   @doc """
+  Returns the `value` associated with `key` in `cache`. If `cache` does not contain `key`,
+  returns nil. `touch` defines if the ARC tables should be rebalanced.
+  """
+  def get(name, key, touch \\ true) do
+    Agent.get(name, __MODULE__, :handle_get, [key, touch])
+  end
+
+  @doc """
   Updates a `value` in `cache`. If `key` is not present in `cache` then nothing is done.
   `touch` defines if the ARC tables should be rebalanced. The function assumes that
   the element exists in the cache.
   """
   def update(name, key, value, touch \\ true) do
     Agent.update(name, __MODULE__, :handle_update, [key, value, touch])
-  end
-
-  @doc """
-  Returns the `value` associated with `key` in `cache`. If `cache` does not contain `key`,
-  returns nil. `touch` defines if the ARC tables should be rebalanced.
-  """
-  def get(name, key, touch \\ true) do
-    Agent.get(name, __MODULE__, :handle_get, [key, touch])
   end
 
   @doc """
@@ -72,136 +76,249 @@ defmodule ArcCache do
     Agent.get(name, __MODULE__, :handle_debug, [table])
   end
 
+  #
+  # -- Callback functions --
+  #
+
   @doc false
   def handle_debug(state, :target), do: Map.get(state, :target)
-  def handle_debug(state, table), do: DblTable.get_all(Map.get(state, table))
+  def handle_debug(state, table), do: get_all(state, table)
+
+  @doc false
+  def handle_delete(state, key) do
+    with nil <- do_delete(state.t1, key),
+         nil <- do_delete(state.t2, key),
+         nil <- do_delete(state.b1, key),
+         nil <- do_delete(state.b2, key),
+    do: nil
+  end
+
+  @doc false
+  defp do_delete(table, key) do
+    entry = :ets.lookup(table.data, key)
+    case entry do
+      [{^key, uniq, _}] ->
+        :ets.delete(table.meta, uniq)
+        :ets.delete(table.data, key)
+        :ok
+      [] -> nil
+    end
+  end
+
+  @doc false
+  def handle_update(state, key, value, true) do
+    case do_lookup(state, key) do
+      {:t1, t1_uniq} -> move_t1_to_t2(state, key, t1_uniq, value)
+      {:t2, t2_uniq} -> move_t2_to_t2(state, key, t2_uniq, value)
+      _other -> nil
+    end
+    state
+  end
+  def handle_update(state, key, value, false) do
+    with false <- :ets.update_element(state.t2.data, key,  {3, value}),
+    do: :ets.update_element(state.t1.data, key,  {3, value})
+    state
+  end
+
+  @doc false
+  defp get_all(state, table) do
+    meta = state |> Map.get(table) |> Map.get(:meta)
+    data = state |> Map.get(table) |> Map.get(:data)
+    get_all(meta, data, :ets.first(meta), [])
+  end
+  defp get_all(meta, data, lastresult, result) do
+    case lastresult do
+      :"$end_of_table" -> result
+      uniq ->
+        [{^uniq, key}] = :ets.lookup(meta, uniq)
+        case :ets.lookup(data, key) do
+          [{^key, ^uniq, value}] ->
+            get_all(meta, data, :ets.next(meta, uniq), result ++ [{key, value}])
+          [{^key, ^uniq}] ->
+            get_all(meta, data, :ets.next(meta, uniq), result ++ [key])
+        end
+    end
+  end
 
   @doc false
   def init(name, size) do
-    {:ok, _} = DblTable.start_link(table_t1 = (name <> "_t1") |> String.to_atom)
-    {:ok, _} = DblTable.start_link(table_b1 = (name <> "_b1") |> String.to_atom)
-    {:ok, _} = DblTable.start_link(table_t2 = (name <> "_t2") |> String.to_atom)
-    {:ok, _} = DblTable.start_link(table_b2 = (name <> "_b2") |> String.to_atom)
-    %ArcCache{t1: table_t1, b1: table_b1, t2: table_t2, b2: table_b2, size: size, target: 0}
+    t1data = :"#{name}_t1data"
+    t1meta = :"#{name}_t1meta"
+    b1data = :"#{name}_b1data"
+    b1meta = :"#{name}_b1meta"
+    t2data = :"#{name}_t2data"
+    t2meta = :"#{name}_t2meta"
+    b2data = :"#{name}_b2data"
+    b2meta = :"#{name}_b2meta"
+    for table <- [t1data, t2data, b1data, b2data], do: make_datatable(table)
+    for table <- [t1meta, t2meta, b1meta, b2meta], do: make_metatable(table)
+    t1 = %{meta: t1meta, data: t1data}
+    t2 = %{meta: t2meta, data: t2data}
+    b1 = %{meta: b1meta, data: b1data}
+    b2 = %{meta: b2meta, data: b2data}
+    %ArcCache{t1: t1, t2: t2, b1: b1, b2: b2, size: size, target: 0}
   end
 
+  defp make_datatable(table) do
+    :ets.new(table, [:named_table, :public, {:read_concurrency, true}])
+  end
+  defp make_metatable(table) do
+    :ets.new(table, [:named_table, :ordered_set])
+  end
+
+  defp datatable(state, table) do
+    state |> Map.get(table) |> Map.get(:data)
+  end
+  defp metatable(state, table) do
+    state |> Map.get(table) |> Map.get(:meta)
+  end
+
+  @doc false
   def handle_get(state, key, touch) do
-      with nil <- get_and_update(state, :t1, key, touch),
-           nil <- get_and_update(state, :t2, key, touch),
-      do: nil
+    with nil <- get_from_table(state, :t2, key, touch, &move_t2_to_t2/4),
+         nil <- get_from_table(state, :t1, key, touch, &move_t1_to_t2/4),
+    do: nil
   end
 
-  defp get_and_update(state, table, key, touch) do
-    t = Map.get(state, table)
-      case DblTable.get(t, key) do
-        nil           -> nil
-        {^key, value} -> touch && move_to_t2(state, t, key, value)
-                         value
-      end
+  defp get_from_table(state, table, key, touch, action) do
+    case state |> datatable(table) |> :ets.lookup(key) do
+      [{^key, uniq, value}] ->
+        touch && action.(state, key, uniq, value)
+        value
+      [] -> nil
+    end
   end
 
   @doc false
   def handle_put(state, key, value) do
-    with false <- do_table(state, state.t1, key, value, &(&1)),
-         false <- do_table(state, state.t2, key, value, &(&1)),
-         false <- do_table(state, state.b1, key, value, &(&1 |> increase_target |> replace(false))),
-         false <- do_table(state, state.b2, key, value, &(&1 |> decrease_target |> replace(true))),
-    do: do_missed(state, key, value)
+    case do_lookup(state, key) do
+      {:t1, t1_uniq} -> move_t1_to_t2(state, key, t1_uniq, value)
+      {:t2, t2_uniq} -> move_t2_to_t2(state, key, t2_uniq, value)
+      {:b1, b1_uniq} -> do_in_b1(state, b1_uniq, key, value)
+      {:b2, b2_uniq} -> do_in_b2(state, b2_uniq, key, value)
+      true           -> put_to_mru(state |> adjust, :t1, key, value)
+    end
   end
 
-  @doc false
-  def handle_update(state, key, value, touch) do
-    cond do
-      DblTable.update(state.t1, key, value) ->
-        touch && move_to_t2(state, state.t1, key, value)
-      DblTable.update(state.t2, key, value) ->
-        touch && move_to_t2(state, state.t2, key, value)
-      true -> nil
+  defp do_lookup(state, key) do
+    with {:t2, nil} <- {:t2, lookup(state.t2.data, key)},
+         {:t1, nil} <- {:t1, lookup(state.t1.data, key)},
+         {:b2, nil} <- {:b2, lookup(state.b2.data, key)},
+         {:b1, nil} <- {:b1, lookup(state.b1.data, key)},
+    do: true
+  end
+
+  defp lookup(table, key) do
+    case :ets.lookup(table, key) do
+      []                     -> nil
+      [{^key, uniq, _value}] -> uniq
+      [{^key, uniq}]         -> uniq
+    end
+  end
+
+  def delete(state, table, uniq, key) do
+    state |> metatable(table) |> :ets.delete(uniq)
+    state |> datatable(table) |> :ets.delete(key)
+  end
+
+  defp do_in_b1(state, uniq, key, value) do
+    state = state |> target(:increase) |> replace(false)
+    delete(state, :b1, uniq, key)
+    put_to_mru(state, :t2, key, value)
+    state
+  end
+
+  defp do_in_b2(state, uniq, key, value) do
+    state = state |> target(:decrease) |> replace(true)
+    delete(state, :b2, uniq, key)
+    put_to_mru(state, :t2, key, value)
+    state
+  end
+
+  defp move_t1_to_t2(state, key, uniq, value) do
+    delete(state, :t1, uniq, key)
+    new_uniq = :erlang.unique_integer([:monotonic])
+    :ets.insert(state.t2.data, {key, new_uniq, value})
+    :ets.insert(state.t2.meta, {new_uniq, key})
+    state
+  end
+
+  defp move_t2_to_t2(state, key, uniq, value) do
+    new_uniq = :erlang.unique_integer([:monotonic])
+    :ets.delete(state.t2.meta, uniq)
+    :ets.insert(state.t2.meta, {new_uniq, key})
+    :ets.update_element(state.t2.data, key,  [{2, new_uniq}, {3, value}])
+    state
+  end
+
+  defp put_to_mru(state, table, key, value) do
+    new_uniq = :erlang.unique_integer([:monotonic])
+    :ets.insert(datatable(state, table), {key, new_uniq, value})
+    :ets.insert(metatable(state, table), {new_uniq, key})
+    state
+  end
+
+  defp target(state, action) do
+    len_b1 = :ets.info(state.b1.data, :size)
+    len_b2 = :ets.info(state.b2.data, :size)
+    new_target = case action do
+      :increase -> min(state.size, state.target + max((len_b2/len_b1) |> Float.floor |> round, 1))
+      :decrease -> max(0,          state.target - max((len_b1/len_b2) |> Float.floor |> round, 1))
+    end
+    %ArcCache{state | target: new_target}
+  end
+
+  defp replace(state, was_in_b2) do
+    len_t1 = :ets.info(state.t1.data, :size)
+    if(len_t1 >= 1 and ((was_in_b2 and len_t1 == state.target) or (len_t1 > state.target))) do
+      ghost(state, :t1, :b1)
+    else
+      ghost(state, :t2, :b2)
     end
     state
   end
 
-  @doc false
-  def handle_delete(state, key) do
-    with nil <- DblTable.delete(state.t1, key),
-         nil <- DblTable.delete(state.t2, key),
-         nil <- DblTable.delete(state.b1, key),
-         nil <- DblTable.delete(state.b2, key),
-    do: nil
-  end
-
-  defp do_table(state, table, key, value, action) do
-    case DblTable.get(table, key) do
-      {^key, _} ->
-        state = state |> action.()
-        move_to_t2(state, table, key, value)
-        state
-      nil -> false
+  defp ghost(state, from, to) do
+    case state |> metatable(from) |> :ets.first do
+      :"$end_of_table" -> nil
+      uniq -> [{^uniq, key}] = state |> metatable(from) |> :ets.take(uniq)
+              state |> datatable(from) |> :ets.delete(key)
+              state |> metatable(to) |> :ets.insert({uniq, key})
+              state |> datatable(to) |> :ets.insert({key, uniq})
     end
   end
 
-  defp do_missed(state, key, value) do
-    state = state |> adjust
-    DblTable.put_to_mru(state.t1, key, value)
-    state
-  end
-
-  defp move_to_t2(state, table, key, value) do
-    DblTable.delete(table, key)
-    DblTable.put_to_mru(state.t2, key, value)
-  end
-
-  defp increase_target(state) do
-    len_b1 = DblTable.size(state.b1)
-    len_b2 = DblTable.size(state.b2)
-    new_target = min(state.size, state.target + max((len_b2/len_b1) |> Float.floor |> round, 1))
-    %ArcCache{state | target: new_target}
-  end
-
-  defp decrease_target(state) do
-    len_b1 = DblTable.size(state.b1)
-    len_b2 = DblTable.size(state.b2)
-    new_target = max(0, state.target - max((len_b1/len_b2) |> Float.floor |> round, 1))
-    %ArcCache{state | target: new_target}
+  defp remove_lru(state, table) do
+    case state |> metatable(table) |> :ets.first do
+      :"$end_of_table" -> nil
+      uniq -> [{^uniq, key}] = state |> metatable(table) |> :ets.take(uniq)
+              state |> datatable(table) |> :ets.take(key)
+    end
   end
 
   defp adjust(state) do
-    len_t1 = DblTable.size(state.t1)
-    len_t2 = DblTable.size(state.t2)
-    len_b1 = DblTable.size(state.b1)
-    len_b2 = DblTable.size(state.b2)
+    len_t1 = :ets.info(state.t1.data, :size)
+    len_t2 = :ets.info(state.t2.data, :size)
+    len_b1 = :ets.info(state.b1.data, :size)
+    len_b2 = :ets.info(state.b2.data, :size)
     len_l1 = len_t1 + len_b1
     len_l2 = len_t2 + len_b2
     cond do
       len_l1 >= state.size ->
         if(len_t1 < state.size) do
-          DblTable.pop_lru(state.b1)
+          remove_lru(state, :b1)
           state |> replace(false)
         else
-          DblTable.pop_lru(state.t1)
+          remove_lru(state, :t1)
           state
         end
       len_l1 < state.size and len_l1 + len_l2 >= state.size ->
         if(len_l1 + len_l2 >= 2*state.size) do
-          DblTable.pop_lru(state.b2)
+          remove_lru(state, :b2)
         end
         state |> replace(false)
       true -> state
     end
   end
 
-  defp replace(state, was_in_b2) do
-    len_t1 = DblTable.size(state.t1)
-    if(len_t1 >= 1 and ((was_in_b2 and len_t1 == state.target) or (len_t1 > state.target))) do
-      ghost(state.t1, state.b1)
-    else
-      ghost(state.t2, state.b2)
-    end
-    state
-  end
-
-  defp ghost(t_table, b_table) do
-    {key, _value} = DblTable.pop_lru(t_table)
-    DblTable.put_to_mru(b_table, key, :ghost)
-  end
 end
